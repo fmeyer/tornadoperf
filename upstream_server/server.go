@@ -16,7 +16,7 @@ import (
 // PingHandler handles ping with Pong
 func PingHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "ponGolang\n")
+	fmt.Fprintf(w, "ponGO\n")
 }
 
 func main() {
