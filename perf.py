@@ -1,13 +1,14 @@
 #!/usr/bin/env python
 
 from tornado.ioloop import IOLoop
+from tornado.httpclient import AsyncHTTPClient
+
 import tornado.web
 import tornado.httpserver
 import aiohttp
 import httpx
 
 url = "http://localhost:8080/ping"
-
 
 class AIOHandler(tornado.web.RequestHandler):
     async def fetch(session, url):
@@ -19,17 +20,12 @@ class AIOHandler(tornado.web.RequestHandler):
             async with session.get(url) as response:
                 text = await response.text()
                 self.write("AIO out: {}".format(text))
- 
-class PyCurlHandler(tornado.web.RequestHandler):
-    async def fetch(session, url):
-        async with session.get(url) as response:
-            return await response.text()
 
+class AsyncHTTPHandler(tornado.web.RequestHandler):
     async def get(self):
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
-                text = await response.text()
-                self.write("PyCurl out: {}".format(text))
+        http_client = AsyncHTTPClient()
+        response = await http_client.fetch(url)
+        self.write("AsyncHTTP out: {}".format(response.body))
 
 class HttpXHandler(tornado.web.RequestHandler):
     async def get(self):
@@ -39,9 +35,11 @@ class HttpXHandler(tornado.web.RequestHandler):
 
 
 if __name__ == "__main__":
+    AsyncHTTPClient.configure("tornado.curl_httpclient.CurlAsyncHTTPClient")
+
     app = tornado.web.Application([
         ("/ping1", AIOHandler),
-        ("/ping2", PyCurlHandler),
+        ("/ping2", AsyncHTTPHandler),
         ("/ping3", HttpXHandler),
     ])
     
