@@ -3,3 +3,5 @@ Pipfile.lock
 tags
 upstream_server/upstream_server
 results.bin
+tags.*
+data

@@ -1,0 +1,49 @@
+version: "3"
+services:
+  influxdb:
+    image: influxdb
+    container_name: influxdb
+    restart: always
+    ports:
+      - 8086:8086
+    networks:
+      - influxdb
+    volumes:
+      - /data/influxdb:/root/.influxdb/data/
+    environment:
+      - INFLUXDB_HTTP_MAX_BODY_SIZE=0
+      - INFLUXDB_DB=k6perfdata
+  upstream_service:
+    build: ./upstream_server/
+    ports:
+      - 8080:8080
+    networks:
+      - influxdb
+  grafana:
+    image: grafana/grafana
+    container_name: grafana
+    restart: always
+    ports:
+      - 3000:3000
+    networks:
+      - influxdb
+    volumes:
+        # sudo mkdir -p ./data/grafana; chown 472:472 ./data/grafana
+      - ./data/grafana:/var/lib/grafana
+      - ./provisioning:/etc/grafana/provisioning
+
+  chronograf:
+    image: chronograf
+    container_name: chronograf
+    restart: always
+    ports: 
+      - 8888:8888
+    command: chronograf --influxdb-url=http://influxdb:8086
+    networks:
+      - influxdb
+    volumes:
+        - ./data/chronograf:/chronografdata/
+
+networks:
+  influxdb:
+

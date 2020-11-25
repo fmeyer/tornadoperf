@@ -2,21 +2,55 @@ package main
 
 import (
 	"context"
+	b64 "encoding/base64"
 	"flag"
 	"fmt"
 	"log"
+	"math/rand"
 	"net/http"
 	"os"
 	"os/signal"
 	"time"
 
+	lockedrand "github.com/fmeyer/upstream_server/lrand"
 	"github.com/gorilla/mux"
 )
+
+const charset = "1234567890!@#$%^&*()abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+const charsetLen = len(charset)
 
 // PingHandler handles ping with Pong
 func PingHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintf(w, "ponGO\n")
+}
+
+// RandomHandler simulates a computing endpoint
+func RandomHandler(w http.ResponseWriter, r *http.Request) {
+
+	var rRand = lockedrand.LockedRand{Rand: rand.New(rand.NewSource(time.Now().UnixNano()))}
+
+	n := rRand.ExpFloat64()
+	time.Sleep(time.Duration(n) * time.Millisecond)
+
+	w.WriteHeader(http.StatusOK)
+
+	data := RandStringBytes(int(n * 1000))
+	sEnc := b64.StdEncoding.EncodeToString([]byte(data))
+
+	fmt.Fprintf(w, sEnc)
+}
+
+// RandStringBytes builds a random string of size n
+func RandStringBytes(n int) string {
+	var sRand = lockedrand.LockedRand{Rand: rand.New(rand.NewSource(time.Now().UnixNano()))}
+
+	b := make([]byte, n)
+	for i := range b {
+		c := sRand.Intn(charsetLen)
+		b[i] = charset[c]
+	}
+	return string(b)
 }
 
 func main() {
@@ -26,6 +60,7 @@ func main() {
 
 	r := mux.NewRouter()
 	r.HandleFunc("/ping", PingHandler)
+	r.HandleFunc("/random", RandomHandler)
 
 	srv := &http.Server{
 		Addr:         "0.0.0.0:8080",

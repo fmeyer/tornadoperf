@@ -7,11 +7,37 @@ import tornado.web
 import tornado.httpserver
 import aiohttp
 import httpx
+import datetime
+import time
+import uvloop
+import asyncio
+import os
+import base64
 
-url = "http://localhost:8080/ping"
+url = "http://localhost:8080/random"
+
+app_settings = {
+    "port": os.environ.get("PERF_PORT", "9000"),
+}
+
+from plop.collector import Collector, PlopFormatter
+
+class ProfileHandler(tornado.web.RequestHandler):
+
+    async def get(self):
+        self.collector = Collector()
+        self.collector.start()
+        return await self.finish_profile()
+
+
+    async def finish_profile(self):
+        time.sleep(1)
+        self.collector.stop()
+        formatter = PlopFormatter()
+        self.finish(formatter.format(self.collector))
 
 class AIOHandler(tornado.web.RequestHandler):
-    async def fetch(session, url):
+    async def fetch(self, session, url):
         async with session.get(url) as response:
             return await response.text()
 
@@ -21,11 +47,14 @@ class AIOHandler(tornado.web.RequestHandler):
                 text = await response.text()
                 self.write("AIO out: {}".format(text))
 
+
 class AsyncHTTPHandler(tornado.web.RequestHandler):
     async def get(self):
         http_client = AsyncHTTPClient()
         response = await http_client.fetch(url)
-        self.write("AsyncHTTP out: {}".format(response.body))
+        out = base64.b64decode(response.body)
+        self.write("AsyncHTTP out: {}".format(out))
+
 
 class HttpXHandler(tornado.web.RequestHandler):
     async def get(self):
@@ -41,9 +70,12 @@ if __name__ == "__main__":
         ("/ping1", AIOHandler),
         ("/ping2", AsyncHTTPHandler),
         ("/ping3", HttpXHandler),
+        ('/_profile', ProfileHandler),
     ])
-    
+
     server = tornado.httpserver.HTTPServer(app)
-    server.bind(8888, '127.0.0.1')
+    server.bind(app_settings["port"], '127.0.0.1')
     server.start()
+
+    # uvloop.install()
     IOLoop.current().start()
