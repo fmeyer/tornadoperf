@@ -15,6 +15,7 @@ services:
       - INFLUXDB_DB=k6perfdata
   upstream_service:
     build: ./upstream_server/
+    restart: always
     ports:
       - 8080:8080
     networks:

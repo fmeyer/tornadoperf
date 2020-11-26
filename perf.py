@@ -13,6 +13,10 @@ import uvloop
 import asyncio
 import os
 import base64
+import logging
+import argparse
+import warnings
+import sys
 
 url = "http://localhost:8080/random"
 
@@ -45,8 +49,8 @@ class AIOHandler(tornado.web.RequestHandler):
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as response:
                 text = await response.text()
-                self.write("AIO out: {}".format(text))
-
+                out = base64.b64decode(text)
+                self.write("AIO out: {}".format(out))
 
 class AsyncHTTPHandler(tornado.web.RequestHandler):
     async def get(self):
@@ -56,6 +60,13 @@ class AsyncHTTPHandler(tornado.web.RequestHandler):
         self.write("AsyncHTTP out: {}".format(out))
 
 
+class AsyncHTTPHandlerLongBlock(tornado.web.RequestHandler):
+    async def get(self):
+        logging.warning('LONGBLOCK started')
+        time.sleep(10)
+        logging.info('LONGBLOCK completed')
+        self.write("AsyncHTTP LONG out: DONE")
+
 class HttpXHandler(tornado.web.RequestHandler):
     async def get(self):
         async with httpx.AsyncClient() as client:
@@ -63,19 +74,73 @@ class HttpXHandler(tornado.web.RequestHandler):
             self.write("Httpx out: {}".format(r.text))
 
 
+
+
+parser = argparse.ArgumentParser('Tornado Perf')
+parser.add_argument(
+    '-d',
+    dest='debug',
+    default=False,
+    action='store_true',
+)
+parser.add_argument(
+    '-v',
+    dest='verbose',
+    default=False,
+    action='store_true',
+)
+
+parser.add_argument(
+    '-uvloop',
+    dest='uvloop',
+    default=False,
+    action='store_true',
+)
+
+
 if __name__ == "__main__":
+
+    args = parser.parse_args()
+
+    event_loop = asyncio.get_event_loop()
+    
+    if args.debug:
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format='%(levelname)7s: %(message)s',
+            stream=sys.stderr,
+        )
+
+        logging.debug('enabling debugging')
+
+        event_loop.set_debug(True)
+        event_loop.slow_callback_duration = 0.005 #500ms
+
+        warnings.simplefilter('always', ResourceWarning)
+    else:
+        logging.basicConfig(
+            level=logging.WARN,
+            format='%(levelname)7s: %(message)s',
+            stream=sys.stderr,
+        )
+
     AsyncHTTPClient.configure("tornado.curl_httpclient.CurlAsyncHTTPClient")
+
+
 
     app = tornado.web.Application([
         ("/ping1", AIOHandler),
         ("/ping2", AsyncHTTPHandler),
         ("/ping3", HttpXHandler),
         ('/_profile', ProfileHandler),
+        ("/block", AsyncHTTPHandlerLongBlock),
     ])
 
     server = tornado.httpserver.HTTPServer(app)
     server.bind(app_settings["port"], '127.0.0.1')
     server.start()
 
-    # uvloop.install()
+    if args.uvloop:
+        uvloop.install()
+
     IOLoop.current().start()

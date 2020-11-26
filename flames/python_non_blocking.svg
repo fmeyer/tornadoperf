@@ -1,0 +1,708 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="390" onload="init(evt)" viewBox="0 0 1200 390" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+	}
+
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom();
+			zoom(target);
+		}
+		else if (e.target.id == "unzoom") unzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+	}, false)
+
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+		return;
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+
+		for (var x = txt.length - 2; x > 0; x--) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom() {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+		search();
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) {
+				currentSearchTerm = term;
+				search();
+			}
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (currentSearchTerm === null) return;
+		var term = currentSearchTerm;
+
+		var re = new RegExp(term, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="390.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >Tornado Perf Blocking</text>
+<text id="details" x="10.00" y="373" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="ignorecase" x="1174.00" y="24" >ic</text>
+<text id="matched" x="1090.00" y="373" > </text>
+<g id="frames">
+<g >
+<title>MainThread`finish (39 samples, 0.01%)</title><rect x="938.9" y="165" width="0.1" height="15.0" fill="rgb(244,159,24)" rx="2" ry="2" />
+<text  x="941.87" y="175.5" ></text>
+</g>
+<g >
+<title>MainThread`_finish_request (21,488 samples, 4.89%)</title><rect x="10.1" y="133" width="57.8" height="15.0" fill="rgb(242,35,52)" rx="2" ry="2" />
+<text  x="13.13" y="143.5" >MainTh..</text>
+</g>
+<g >
+<title>MainThread`close (17,469 samples, 3.98%)</title><rect x="10.1" y="69" width="47.0" height="15.0" fill="rgb(236,80,39)" rx="2" ry="2" />
+<text  x="13.13" y="79.5" >Main..</text>
+</g>
+<g >
+<title>MainThread`_try_inline_read (40,749 samples, 9.28%)</title><rect x="939.0" y="149" width="109.6" height="15.0" fill="rgb(247,215,18)" rx="2" ry="2" />
+<text  x="942.04" y="159.5" >MainThread`_t..</text>
+</g>
+<g >
+<title>MainThread`register (21,503 samples, 4.90%)</title><rect x="1048.6" y="69" width="57.8" height="15.0" fill="rgb(242,47,26)" rx="2" ry="2" />
+<text  x="1051.61" y="79.5" >MainTh..</text>
+</g>
+<g >
+<title>MainThread`_run_once (439,011 samples, 99.99%)</title><rect x="10.1" y="229" width="1179.9" height="15.0" fill="rgb(229,73,30)" rx="2" ry="2" />
+<text  x="13.13" y="239.5" >MainThread`_run_once</text>
+</g>
+<g >
+<title>MainThread`select (31,089 samples, 7.08%)</title><rect x="1106.4" y="213" width="83.6" height="15.0" fill="rgb(253,129,38)" rx="2" ry="2" />
+<text  x="1109.44" y="223.5" >MainThrea..</text>
+</g>
+<g >
+<title>MainThread`start (439,011 samples, 99.99%)</title><rect x="10.1" y="261" width="1179.9" height="15.0" fill="rgb(205,20,47)" rx="2" ry="2" />
+<text  x="13.13" y="271.5" >MainThread`start</text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (38 samples, 0.01%)</title><rect x="10.0" y="85" width="0.1" height="15.0" fill="rgb(248,209,42)" rx="2" ry="2" />
+<text  x="13.01" y="95.5" ></text>
+</g>
+<g >
+<title>MainThread`_run (407,922 samples, 92.91%)</title><rect x="10.1" y="213" width="1096.3" height="15.0" fill="rgb(248,224,49)" rx="2" ry="2" />
+<text  x="13.13" y="223.5" >MainThread`_run</text>
+</g>
+<g >
+<title>MainThread`set_etag_header (3,949 samples, 0.90%)</title><rect x="378.6" y="165" width="10.7" height="15.0" fill="rgb(231,3,16)" rx="2" ry="2" />
+<text  x="381.64" y="175.5" ></text>
+</g>
+<g >
+<title>MainThread`read_until_regex (40,749 samples, 9.28%)</title><rect x="939.0" y="165" width="109.6" height="15.0" fill="rgb(234,85,38)" rx="2" ry="2" />
+<text  x="942.04" y="175.5" >MainThread`re..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load (40 samples, 0.01%)</title><rect x="10.0" y="165" width="0.1" height="15.0" fill="rgb(244,171,47)" rx="2" ry="2" />
+<text  x="13.01" y="175.5" ></text>
+</g>
+<g >
+<title>MainThread`_read_to_buffer (40,749 samples, 9.28%)</title><rect x="939.0" y="117" width="109.6" height="15.0" fill="rgb(241,12,10)" rx="2" ry="2" />
+<text  x="942.04" y="127.5" >MainThread`_r..</text>
+</g>
+<g >
+<title>MainThread`add_handler (5,350 samples, 1.22%)</title><rect x="849.2" y="149" width="14.4" height="15.0" fill="rgb(245,28,26)" rx="2" ry="2" />
+<text  x="852.17" y="159.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (40 samples, 0.01%)</title><rect x="10.0" y="133" width="0.1" height="15.0" fill="rgb(210,39,30)" rx="2" ry="2" />
+<text  x="13.01" y="143.5" ></text>
+</g>
+<g >
+<title>MainThread`finish (39 samples, 0.01%)</title><rect x="938.9" y="149" width="0.1" height="15.0" fill="rgb(227,158,37)" rx="2" ry="2" />
+<text  x="941.87" y="159.5" ></text>
+</g>
+<g >
+<title>MainThread`write_headers (115,630 samples, 26.34%)</title><rect x="67.9" y="149" width="310.7" height="15.0" fill="rgb(247,171,5)" rx="2" ry="2" />
+<text  x="70.88" y="159.5" >MainThread`write_headers</text>
+</g>
+<g >
+<title>MainThread`remove_reader (2,276 samples, 0.52%)</title><rect x="863.6" y="133" width="6.1" height="15.0" fill="rgb(244,146,9)" rx="2" ry="2" />
+<text  x="866.55" y="143.5" ></text>
+</g>
+<g >
+<title>MainThread`_handle_events (204,120 samples, 46.49%)</title><rect x="389.3" y="197" width="548.5" height="15.0" fill="rgb(219,137,48)" rx="2" ry="2" />
+<text  x="392.25" y="207.5" >MainThread`_handle_events</text>
+</g>
+<g >
+<title>MainThread`execute (39 samples, 0.01%)</title><rect x="938.9" y="133" width="0.1" height="15.0" fill="rgb(232,101,29)" rx="2" ry="2" />
+<text  x="941.87" y="143.5" ></text>
+</g>
+<g >
+<title>MainThread`__init__ (3,305 samples, 0.75%)</title><rect x="869.7" y="149" width="8.9" height="15.0" fill="rgb(245,198,42)" rx="2" ry="2" />
+<text  x="872.67" y="159.5" ></text>
+</g>
+<g >
+<title>MainThread`_handle_socket (7,626 samples, 1.74%)</title><rect x="849.2" y="165" width="20.5" height="15.0" fill="rgb(238,138,45)" rx="2" ry="2" />
+<text  x="852.17" y="175.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (40 samples, 0.01%)</title><rect x="10.0" y="149" width="0.1" height="15.0" fill="rgb(210,40,33)" rx="2" ry="2" />
+<text  x="13.01" y="159.5" ></text>
+</g>
+<g >
+<title>MainThread`_read_message (62,351 samples, 14.20%)</title><rect x="938.9" y="181" width="167.5" height="15.0" fill="rgb(206,99,1)" rx="2" ry="2" />
+<text  x="941.87" y="191.5" >MainThread`_read_mess..</text>
+</g>
+<g >
+<title>MainThread`future_add_done_callback (21,488 samples, 4.89%)</title><rect x="10.1" y="149" width="57.8" height="15.0" fill="rgb(250,220,29)" rx="2" ry="2" />
+<text  x="13.13" y="159.5" >MainTh..</text>
+</g>
+<g >
+<title>MainThread`_handle_events (178,756 samples, 40.71%)</title><rect x="389.3" y="181" width="480.4" height="15.0" fill="rgb(242,70,19)" rx="2" ry="2" />
+<text  x="392.25" y="191.5" >MainThread`_handle_events</text>
+</g>
+<g >
+<title>all (439,060 samples, 100%)</title><rect x="10.0" y="341" width="1180.0" height="15.0" fill="rgb(215,151,50)" rx="2" ry="2" />
+<text  x="13.00" y="351.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (39 samples, 0.01%)</title><rect x="10.0" y="101" width="0.1" height="15.0" fill="rgb(248,70,36)" rx="2" ry="2" />
+<text  x="13.01" y="111.5" ></text>
+</g>
+<g >
+<title>MainThread`accept (20,923 samples, 4.77%)</title><rect x="878.6" y="165" width="56.2" height="15.0" fill="rgb(253,122,41)" rx="2" ry="2" />
+<text  x="881.55" y="175.5" >MainT..</text>
+</g>
+<g >
+<title>MainThread`accept_handler (25,364 samples, 5.78%)</title><rect x="869.7" y="181" width="68.1" height="15.0" fill="rgb(221,154,43)" rx="2" ry="2" />
+<text  x="872.67" y="191.5" >MainThr..</text>
+</g>
+<g >
+<title>MainThread`_run (327 samples, 0.07%)</title><rect x="938.0" y="181" width="0.9" height="15.0" fill="rgb(219,17,48)" rx="2" ry="2" />
+<text  x="940.99" y="191.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (43 samples, 0.01%)</title><rect x="10.0" y="213" width="0.1" height="15.0" fill="rgb(229,40,1)" rx="2" ry="2" />
+<text  x="13.01" y="223.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (46 samples, 0.01%)</title><rect x="10.0" y="245" width="0.1" height="15.0" fill="rgb(234,0,9)" rx="2" ry="2" />
+<text  x="13.00" y="255.5" ></text>
+</g>
+<g >
+<title>MainThread`write (115,618 samples, 26.33%)</title><rect x="67.9" y="133" width="310.7" height="15.0" fill="rgb(237,68,4)" rx="2" ry="2" />
+<text  x="70.91" y="143.5" >MainThread`write</text>
+</g>
+<g >
+<title>MainThread`_execute (141,067 samples, 32.13%)</title><rect x="10.1" y="197" width="379.2" height="15.0" fill="rgb(232,119,45)" rx="2" ry="2" />
+<text  x="13.13" y="207.5" >MainThread`_execute</text>
+</g>
+<g >
+<title>MainThread`set_close_exec (1,135 samples, 0.26%)</title><rect x="934.8" y="165" width="3.0" height="15.0" fill="rgb(238,207,29)" rx="2" ry="2" />
+<text  x="937.79" y="175.5" ></text>
+</g>
+<g >
+<title>MainThread`set_close_callback (21,526 samples, 4.90%)</title><rect x="1048.6" y="165" width="57.8" height="15.0" fill="rgb(213,222,43)" rx="2" ry="2" />
+<text  x="1051.56" y="175.5" >MainTh..</text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (43 samples, 0.01%)</title><rect x="10.0" y="197" width="0.1" height="15.0" fill="rgb(224,98,35)" rx="2" ry="2" />
+<text  x="13.01" y="207.5" ></text>
+</g>
+<g >
+<title>MainThread`add_reader (5,350 samples, 1.22%)</title><rect x="849.2" y="133" width="14.4" height="15.0" fill="rgb(228,46,28)" rx="2" ry="2" />
+<text  x="852.17" y="143.5" ></text>
+</g>
+<g >
+<title>MainThread`_process_queue (1,197 samples, 0.27%)</title><rect x="846.0" y="149" width="3.2" height="15.0" fill="rgb(208,81,28)" rx="2" ry="2" />
+<text  x="848.95" y="159.5" ></text>
+</g>
+<g >
+<title>MainThread`remove_handler (2,276 samples, 0.52%)</title><rect x="863.6" y="149" width="6.1" height="15.0" fill="rgb(226,137,0)" rx="2" ry="2" />
+<text  x="866.55" y="159.5" ></text>
+</g>
+<g >
+<title>MainThread`add_handler (21,526 samples, 4.90%)</title><rect x="1048.6" y="117" width="57.8" height="15.0" fill="rgb(233,67,29)" rx="2" ry="2" />
+<text  x="1051.56" y="127.5" >MainTh..</text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (43 samples, 0.01%)</title><rect x="10.0" y="229" width="0.1" height="15.0" fill="rgb(221,204,35)" rx="2" ry="2" />
+<text  x="13.01" y="239.5" ></text>
+</g>
+<g >
+<title>MainThread`register (5,347 samples, 1.22%)</title><rect x="849.2" y="101" width="14.4" height="15.0" fill="rgb(206,133,3)" rx="2" ry="2" />
+<text  x="852.18" y="111.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (43 samples, 0.01%)</title><rect x="10.0" y="181" width="0.1" height="15.0" fill="rgb(223,35,10)" rx="2" ry="2" />
+<text  x="13.01" y="191.5" ></text>
+</g>
+<g >
+<title>MainThread`read_from_fd (40,749 samples, 9.28%)</title><rect x="939.0" y="101" width="109.6" height="15.0" fill="rgb(225,27,35)" rx="2" ry="2" />
+<text  x="942.04" y="111.5" >MainThread`re..</text>
+</g>
+<g >
+<title>MainThread`_finish_pending_requests (7,228 samples, 1.65%)</title><rect x="829.7" y="165" width="19.5" height="15.0" fill="rgb(253,56,24)" rx="2" ry="2" />
+<text  x="832.74" y="175.5" ></text>
+</g>
+<g >
+<title>MainThread`close_fd (17,469 samples, 3.98%)</title><rect x="10.1" y="85" width="47.0" height="15.0" fill="rgb(234,227,28)" rx="2" ry="2" />
+<text  x="13.13" y="95.5" >Main..</text>
+</g>
+<g >
+<title>MainThread`close (21,488 samples, 4.89%)</title><rect x="10.1" y="117" width="57.8" height="15.0" fill="rgb(232,120,41)" rx="2" ry="2" />
+<text  x="13.13" y="127.5" >MainTh..</text>
+</g>
+<g >
+<title>MainThread`_finish (6,031 samples, 1.37%)</title><rect x="829.7" y="149" width="16.3" height="15.0" fill="rgb(230,19,34)" rx="2" ry="2" />
+<text  x="832.74" y="159.5" ></text>
+</g>
+<g >
+<title>MainThread`_maybe_add_error_listener (21,526 samples, 4.90%)</title><rect x="1048.6" y="149" width="57.8" height="15.0" fill="rgb(236,207,18)" rx="2" ry="2" />
+<text  x="1051.56" y="159.5" >MainTh..</text>
+</g>
+<g >
+<title>MainThread`compute_etag (3,949 samples, 0.90%)</title><rect x="378.6" y="149" width="10.7" height="15.0" fill="rgb(238,170,46)" rx="2" ry="2" />
+<text  x="381.64" y="159.5" ></text>
+</g>
+<g >
+<title>MainThread`_add_reader (21,523 samples, 4.90%)</title><rect x="1048.6" y="85" width="57.8" height="15.0" fill="rgb(213,113,35)" rx="2" ry="2" />
+<text  x="1051.56" y="95.5" >MainTh..</text>
+</g>
+<g >
+<title>MainThread`remove_reader (4,019 samples, 0.92%)</title><rect x="57.1" y="69" width="10.8" height="15.0" fill="rgb(216,64,4)" rx="2" ry="2" />
+<text  x="60.08" y="79.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (439,058 samples, 100.00%)</title><rect x="10.0" y="277" width="1180.0" height="15.0" fill="rgb(215,210,15)" rx="2" ry="2" />
+<text  x="13.00" y="287.5" >MainThread`&lt;module&gt;</text>
+</g>
+<g >
+<title>MainThread`_real_close (17,464 samples, 3.98%)</title><rect x="10.1" y="53" width="47.0" height="15.0" fill="rgb(234,221,20)" rx="2" ry="2" />
+<text  x="13.14" y="63.5" >Main..</text>
+</g>
+<g >
+<title>MainThread`remove_handler (4,019 samples, 0.92%)</title><rect x="57.1" y="85" width="10.8" height="15.0" fill="rgb(226,79,16)" rx="2" ry="2" />
+<text  x="60.08" y="95.5" ></text>
+</g>
+<g >
+<title>MainThread`_handle_connection (3,306 samples, 0.75%)</title><rect x="869.7" y="165" width="8.9" height="15.0" fill="rgb(252,9,47)" rx="2" ry="2" />
+<text  x="872.67" y="175.5" ></text>
+</g>
+<g >
+<title>MainThread`close (21,488 samples, 4.89%)</title><rect x="10.1" y="101" width="57.8" height="15.0" fill="rgb(250,15,49)" rx="2" ry="2" />
+<text  x="13.13" y="111.5" >MainTh..</text>
+</g>
+<g >
+<title>MainThread`_handle_force_timeout (327 samples, 0.07%)</title><rect x="938.0" y="165" width="0.9" height="15.0" fill="rgb(215,164,25)" rx="2" ry="2" />
+<text  x="940.99" y="175.5" ></text>
+</g>
+<g >
+<title>MainThread`_add_io_state (21,526 samples, 4.90%)</title><rect x="1048.6" y="133" width="57.8" height="15.0" fill="rgb(244,5,25)" rx="2" ry="2" />
+<text  x="1051.56" y="143.5" >MainTh..</text>
+</g>
+<g >
+<title>MainThread`write_to_fd (115,607 samples, 26.33%)</title><rect x="67.9" y="101" width="310.7" height="15.0" fill="rgb(225,204,41)" rx="2" ry="2" />
+<text  x="70.94" y="111.5" >MainThread`write_to_fd</text>
+</g>
+<g >
+<title>MainThread`_run_callback (384 samples, 0.09%)</title><rect x="937.8" y="197" width="1.1" height="15.0" fill="rgb(248,42,17)" rx="2" ry="2" />
+<text  x="940.84" y="207.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (40 samples, 0.01%)</title><rect x="10.0" y="117" width="0.1" height="15.0" fill="rgb(249,181,26)" rx="2" ry="2" />
+<text  x="13.01" y="127.5" ></text>
+</g>
+<g >
+<title>MainThread`_handle_timeout (57 samples, 0.01%)</title><rect x="937.8" y="181" width="0.2" height="15.0" fill="rgb(213,226,34)" rx="2" ry="2" />
+<text  x="940.84" y="191.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (439,059 samples, 100.00%)</title><rect x="10.0" y="309" width="1180.0" height="15.0" fill="rgb(221,198,25)" rx="2" ry="2" />
+<text  x="13.00" y="319.5" >MainThread`&lt;module&gt;</text>
+</g>
+<g >
+<title>MainThread`_remove_reader (2,276 samples, 0.52%)</title><rect x="863.6" y="117" width="6.1" height="15.0" fill="rgb(222,35,44)" rx="2" ry="2" />
+<text  x="866.55" y="127.5" ></text>
+</g>
+<g >
+<title>MainThread`flush (115,630 samples, 26.34%)</title><rect x="67.9" y="165" width="310.7" height="15.0" fill="rgb(213,15,39)" rx="2" ry="2" />
+<text  x="70.88" y="175.5" >MainThread`flush</text>
+</g>
+<g >
+<title>MainThread`add_reader (21,526 samples, 4.90%)</title><rect x="1048.6" y="101" width="57.8" height="15.0" fill="rgb(251,13,23)" rx="2" ry="2" />
+<text  x="1051.56" y="111.5" >MainTh..</text>
+</g>
+<g >
+<title>MainThread`_add_reader (5,349 samples, 1.22%)</title><rect x="849.2" y="117" width="14.4" height="15.0" fill="rgb(215,77,27)" rx="2" ry="2" />
+<text  x="852.17" y="127.5" ></text>
+</g>
+<g >
+<title>MainThread`_handle_write (115,618 samples, 26.33%)</title><rect x="67.9" y="117" width="310.7" height="15.0" fill="rgb(221,153,0)" rx="2" ry="2" />
+<text  x="70.91" y="127.5" >MainThread`_handle_write</text>
+</g>
+<g >
+<title>MainThread`run_forever (439,011 samples, 99.99%)</title><rect x="10.1" y="245" width="1179.9" height="15.0" fill="rgb(236,73,20)" rx="2" ry="2" />
+<text  x="13.13" y="255.5" >MainThread`run_forever</text>
+</g>
+<g >
+<title>MainThread`unregister (4,019 samples, 0.92%)</title><rect x="57.1" y="37" width="10.8" height="15.0" fill="rgb(240,145,15)" rx="2" ry="2" />
+<text  x="60.08" y="47.5" ></text>
+</g>
+<g >
+<title>MainThread`_run_code (439,059 samples, 100.00%)</title><rect x="10.0" y="325" width="1180.0" height="15.0" fill="rgb(252,46,14)" rx="2" ry="2" />
+<text  x="13.00" y="335.5" >MainThread`_run_code</text>
+</g>
+<g >
+<title>MainThread`main (439,059 samples, 100.00%)</title><rect x="10.0" y="293" width="1180.0" height="15.0" fill="rgb(213,150,50)" rx="2" ry="2" />
+<text  x="13.00" y="303.5" >MainThread`main</text>
+</g>
+<g >
+<title>MainThread`_read_to_buffer_loop (40,749 samples, 9.28%)</title><rect x="939.0" y="133" width="109.6" height="15.0" fill="rgb(222,60,10)" rx="2" ry="2" />
+<text  x="942.04" y="143.5" >MainThread`_r..</text>
+</g>
+<g >
+<title>MainThread`_server_request_loop (62,351 samples, 14.20%)</title><rect x="938.9" y="197" width="167.5" height="15.0" fill="rgb(249,107,51)" rx="2" ry="2" />
+<text  x="941.87" y="207.5" >MainThread`_server_re..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load (46 samples, 0.01%)</title><rect x="10.0" y="261" width="0.1" height="15.0" fill="rgb(209,173,48)" rx="2" ry="2" />
+<text  x="13.00" y="271.5" ></text>
+</g>
+<g >
+<title>MainThread`finish (21,488 samples, 4.89%)</title><rect x="10.1" y="165" width="57.8" height="15.0" fill="rgb(242,86,15)" rx="2" ry="2" />
+<text  x="13.13" y="175.5" >MainTh..</text>
+</g>
+<g >
+<title>MainThread`finish (141,067 samples, 32.13%)</title><rect x="10.1" y="181" width="379.2" height="15.0" fill="rgb(244,38,13)" rx="2" ry="2" />
+<text  x="13.13" y="191.5" >MainThread`finish</text>
+</g>
+<g >
+<title>MainThread`_remove_reader (4,019 samples, 0.92%)</title><rect x="57.1" y="53" width="10.8" height="15.0" fill="rgb(211,207,15)" rx="2" ry="2" />
+<text  x="60.08" y="63.5" ></text>
+</g>
+<g >
+<title>MainThread`unregister (2,274 samples, 0.52%)</title><rect x="863.6" y="101" width="6.1" height="15.0" fill="rgb(241,200,35)" rx="2" ry="2" />
+<text  x="866.56" y="111.5" ></text>
+</g>
+</g>
+</svg>
