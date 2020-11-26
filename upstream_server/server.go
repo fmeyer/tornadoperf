@@ -36,9 +36,9 @@ func RandomHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 
 	data := RandStringBytes(int(n * 1000))
-	sEnc := b64.StdEncoding.EncodeToString([]byte(data))
+	payload := b64.StdEncoding.EncodeToString([]byte(data))
 
-	fmt.Fprintf(w, sEnc)
+	fmt.Fprintf(w, payload)
 }
 
 // RandStringBytes builds a random string of size n
@@ -47,8 +47,7 @@ func RandStringBytes(n int) string {
 
 	b := make([]byte, n)
 	for i := range b {
-		c := sRand.Intn(charsetLen)
-		b[i] = charset[c]
+		b[i] = charset[sRand.Intn(charsetLen)]
 	}
 	return string(b)
 }
